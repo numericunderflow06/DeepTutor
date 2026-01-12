@@ -5,12 +5,15 @@ RAGAnything Pipeline
 End-to-end pipeline wrapping RAG-Anything for academic document processing.
 """
 
+import asyncio
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional
 
 from src.logging import get_logger
 from src.logging.adapters import LightRAGLogContext
+from src.services.llm import get_llm_config
+from src.services.llm import claude_code_provider
 
 
 class RAGAnythingPipeline:
@@ -75,10 +78,23 @@ class RAGAnythingPipeline:
         from src.services.embedding import get_embedding_client
         from src.services.llm import get_llm_client
 
+        llm_cfg = get_llm_config()
+        use_claude_code = llm_cfg.binding == "claude_code"
         llm_client = get_llm_client()
         embed_client = get_embedding_client()
 
         def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+            if use_claude_code:
+                # Use Claude Code CLI provider
+                messages = list(history_messages) if history_messages else None
+                return asyncio.get_event_loop().run_until_complete(
+                    claude_code_provider.complete(
+                        prompt=prompt,
+                        system_prompt=system_prompt or "You are a helpful assistant.",
+                        model=llm_cfg.model,
+                        messages=messages,
+                    )
+                )
             return openai_complete_if_cache(
                 llm_client.config.model,
                 prompt,
@@ -97,6 +113,18 @@ class RAGAnythingPipeline:
             messages=None,
             **kwargs,
         ):
+            if use_claude_code:
+                # Claude Code CLI - fall back to text-only
+                enhanced_prompt = prompt
+                if image_data:
+                    enhanced_prompt = f"[Note: An image was provided but cannot be processed directly.]\n\n{prompt}"
+                return asyncio.get_event_loop().run_until_complete(
+                    claude_code_provider.complete(
+                        prompt=enhanced_prompt,
+                        system_prompt=system_prompt or "You are a helpful assistant.",
+                        model=llm_cfg.model,
+                    )
+                )
             # Handle multimodal messages
             if messages:
                 clean_kwargs = {
