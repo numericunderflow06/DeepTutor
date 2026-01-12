@@ -30,7 +30,7 @@ from enum import Enum
 import os
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from . import cloud_provider, local_provider
+from . import cloud_provider, local_provider, claude_code_provider
 from .config import LLMConfig, get_llm_config
 from .provider import provider_manager
 from .utils import is_local_llm_server
@@ -42,6 +42,7 @@ class LLMMode(str, Enum):
     API = "api"  # Cloud API only
     LOCAL = "local"  # Local/self-hosted only
     HYBRID = "hybrid"  # Both, use active provider
+    CLAUDE_CODE = "claude_code"  # Claude Code CLI (Max subscription)
 
 
 def get_llm_mode() -> LLMMode:
@@ -52,10 +53,16 @@ def get_llm_mode() -> LLMMode:
         LLMMode: Current deployment mode (defaults to hybrid)
     """
     mode = os.getenv("LLM_MODE", "hybrid").lower()
+    # Also check LLM_BINDING for claude_code
+    binding = os.getenv("LLM_BINDING", "").lower()
+    if binding == "claude_code":
+        return LLMMode.CLAUDE_CODE
     if mode == "api":
         return LLMMode.API
     elif mode == "local":
         return LLMMode.LOCAL
+    elif mode == "claude_code":
+        return LLMMode.CLAUDE_CODE
     return LLMMode.HYBRID
 
 
@@ -176,7 +183,7 @@ async def complete(
     """
     Unified LLM completion function.
 
-    Routes to cloud_provider or local_provider based on configuration.
+    Routes to cloud_provider, local_provider, or claude_code_provider based on configuration.
 
     Args:
         prompt: The user prompt
@@ -191,6 +198,17 @@ async def complete(
     Returns:
         str: The LLM response
     """
+    # Check for Claude Code CLI mode first
+    mode = get_llm_mode()
+    if mode == LLMMode.CLAUDE_CODE:
+        return await claude_code_provider.complete(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model=model or os.getenv("LLM_MODEL"),
+            messages=messages,
+            **kwargs,
+        )
+
     # Get effective config if parameters not provided
     if not model or not base_url:
         config = get_effective_config()
@@ -235,7 +253,7 @@ async def stream(
     """
     Unified LLM streaming function.
 
-    Routes to cloud_provider or local_provider based on configuration.
+    Routes to cloud_provider, local_provider, or claude_code_provider based on configuration.
 
     Args:
         prompt: The user prompt
@@ -250,6 +268,19 @@ async def stream(
     Yields:
         str: Response chunks
     """
+    # Check for Claude Code CLI mode first
+    mode = get_llm_mode()
+    if mode == LLMMode.CLAUDE_CODE:
+        async for chunk in claude_code_provider.stream(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model=model or os.getenv("LLM_MODEL"),
+            messages=messages,
+            **kwargs,
+        ):
+            yield chunk
+        return
+
     # Get effective config if parameters not provided
     if not model or not base_url:
         config = get_effective_config()
@@ -323,6 +354,19 @@ API_PROVIDER_PRESETS = {
         "binding": "anthropic",
         "models": ["claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
     },
+    "claude_code": {
+        "name": "Claude Code CLI (Max Subscription)",
+        "base_url": None,
+        "requires_key": False,
+        "binding": "claude_code",
+        "models": [
+            "claude-sonnet-4-20250514",
+            "claude-opus-4-5-20251101",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
+        ],
+        "description": "Uses Claude Code CLI with Max subscription OAuth authentication",
+    },
     "deepseek": {
         "name": "DeepSeek",
         "base_url": "https://api.deepseek.com",
@@ -387,4 +431,5 @@ __all__ = [
     "get_provider_presets",
     "API_PROVIDER_PRESETS",
     "LOCAL_PROVIDER_PRESETS",
+    "claude_code_provider",
 ]
