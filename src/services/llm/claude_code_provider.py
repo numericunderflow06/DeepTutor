@@ -93,7 +93,10 @@ async def stream(
     **kwargs,
 ) -> AsyncGenerator[str, None]:
     """
-    Stream a response using Claude Code CLI with stream-json output.
+    Stream a response using Claude Code CLI.
+
+    On Windows, streaming via subprocess can be problematic, so we fall back
+    to non-streaming mode and yield the complete response.
 
     Args:
         prompt: The user prompt
@@ -106,12 +109,30 @@ async def stream(
         str: Response text chunks
     """
     model = model or os.getenv("LLM_MODEL", DEFAULT_MODEL)
-    timeout = kwargs.get("timeout", DEFAULT_TIMEOUT)
 
-    # Build the full prompt
+    # On Windows, async subprocess streaming with .cmd files is problematic
+    # Fall back to non-streaming mode for reliability
+    import platform
+    if platform.system() == "Windows":
+        # Use synchronous complete and yield result in chunks
+        result = await complete(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model=model,
+            messages=messages,
+            **kwargs
+        )
+        # Yield in chunks to simulate streaming
+        chunk_size = 50
+        for i in range(0, len(result), chunk_size):
+            yield result[i:i + chunk_size]
+            await asyncio.sleep(0.01)  # Small delay for UI responsiveness
+        return
+
+    # Unix: use async subprocess for true streaming
+    timeout = kwargs.get("timeout", DEFAULT_TIMEOUT)
     full_prompt = _build_prompt(prompt, system_prompt, messages)
 
-    # Build command with stream-json format
     cmd = [
         get_claude_cmd(),
         "-p", "-",
@@ -120,25 +141,22 @@ async def stream(
         "--dangerously-skip-permissions"
     ]
 
-    # Use async subprocess for streaming
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-
-    # Send prompt
-    process.stdin.write(full_prompt.encode('utf-8'))
-    await process.stdin.drain()
-    process.stdin.close()
-
-    accumulated_text = ""
-    start_time = time.time()
-
     try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        process.stdin.write(full_prompt.encode('utf-8'))
+        await process.stdin.drain()
+        process.stdin.close()
+
+        accumulated_text = ""
+        start_time = time.time()
+
         async for line in process.stdout:
-            # Check timeout
             if time.time() - start_time > timeout:
                 process.kill()
                 break
@@ -151,7 +169,6 @@ async def stream(
                 event = json.loads(line_str)
                 event_type = event.get("type", "")
 
-                # Handle text delta events
                 if event_type == "content_block_delta":
                     delta = event.get("delta", {})
                     if delta.get("type") == "text_delta":
@@ -160,7 +177,6 @@ async def stream(
                             accumulated_text += text
                             yield text
 
-                # Handle assistant message with direct text
                 elif event_type == "assistant":
                     message = event.get("message", {})
                     content_list = message.get("content", [])
@@ -170,21 +186,27 @@ async def stream(
                             if text and text not in accumulated_text:
                                 yield text
 
-                # Handle final result
                 elif event_type == "result":
                     result_text = event.get("result", "")
                     if result_text and not accumulated_text:
                         yield result_text
 
             except json.JSONDecodeError:
-                # Not JSON, might be raw output
                 continue
 
-    except Exception as e:
-        # Log error but don't crash
-        print(f"[Claude Code Provider] Stream error: {e}")
-    finally:
         await process.wait()
+
+    except Exception as e:
+        # Fallback to non-streaming on any error
+        print(f"[Claude Code Provider] Stream error, falling back: {e}")
+        result = await complete(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model=model,
+            messages=messages,
+            **kwargs
+        )
+        yield result
 
 
 def _build_prompt(
