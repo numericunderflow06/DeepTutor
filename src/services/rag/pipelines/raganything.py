@@ -86,15 +86,29 @@ class RAGAnythingPipeline:
         def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
             if use_claude_code:
                 # Use Claude Code CLI provider
+                # Use nest_asyncio or thread executor to avoid "event loop already running" error
+                import concurrent.futures
                 messages = list(history_messages) if history_messages else None
-                return asyncio.get_event_loop().run_until_complete(
-                    claude_code_provider.complete(
-                        prompt=prompt,
-                        system_prompt=system_prompt or "You are a helpful assistant.",
-                        model=llm_cfg.model,
-                        messages=messages,
-                    )
-                )
+
+                def run_sync():
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(
+                            claude_code_provider.complete(
+                                prompt=prompt,
+                                system_prompt=system_prompt or "You are a helpful assistant.",
+                                model=llm_cfg.model,
+                                messages=messages,
+                            )
+                        )
+                    finally:
+                        loop.close()
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_sync)
+                    return future.result()
             return openai_complete_if_cache(
                 llm_client.config.model,
                 prompt,
@@ -115,16 +129,29 @@ class RAGAnythingPipeline:
         ):
             if use_claude_code:
                 # Claude Code CLI - fall back to text-only
+                import concurrent.futures
                 enhanced_prompt = prompt
                 if image_data:
                     enhanced_prompt = f"[Note: An image was provided but cannot be processed directly.]\n\n{prompt}"
-                return asyncio.get_event_loop().run_until_complete(
-                    claude_code_provider.complete(
-                        prompt=enhanced_prompt,
-                        system_prompt=system_prompt or "You are a helpful assistant.",
-                        model=llm_cfg.model,
-                    )
-                )
+
+                def run_sync():
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(
+                            claude_code_provider.complete(
+                                prompt=enhanced_prompt,
+                                system_prompt=system_prompt or "You are a helpful assistant.",
+                                model=llm_cfg.model,
+                            )
+                        )
+                    finally:
+                        loop.close()
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_sync)
+                    return future.result()
             # Handle multimodal messages
             if messages:
                 clean_kwargs = {

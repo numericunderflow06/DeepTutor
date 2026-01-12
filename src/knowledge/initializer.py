@@ -203,19 +203,29 @@ class KnowledgeBaseInitializer:
         # Define LLM model function
         def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
             if use_claude_code:
-                # Use Claude Code CLI provider
-                import asyncio
-                messages = []
-                for msg in history_messages:
-                    messages.append(msg)
-                return asyncio.get_event_loop().run_until_complete(
-                    claude_code_provider.complete(
-                        prompt=prompt,
-                        system_prompt=system_prompt or "You are a helpful assistant.",
-                        model=llm_model,
-                        messages=messages if messages else None,
-                    )
-                )
+                # Use Claude Code CLI provider with ThreadPoolExecutor to avoid event loop issues
+                import concurrent.futures
+                messages = list(history_messages) if history_messages else None
+
+                def run_sync():
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(
+                            claude_code_provider.complete(
+                                prompt=prompt,
+                                system_prompt=system_prompt or "You are a helpful assistant.",
+                                model=llm_model,
+                                messages=messages,
+                            )
+                        )
+                    finally:
+                        loop.close()
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_sync)
+                    return future.result()
             return openai_complete_if_cache(
                 llm_model,
                 prompt,
@@ -236,20 +246,30 @@ class KnowledgeBaseInitializer:
             **kwargs,
         ):
             if use_claude_code:
-                # Claude Code CLI doesn't support vision directly in the same way
-                # For now, fall back to text-only processing for vision requests
-                import asyncio
-                # If there's image data, include a note about it in the prompt
+                # Claude Code CLI doesn't support vision directly - fall back to text-only
+                import concurrent.futures
                 enhanced_prompt = prompt
                 if image_data:
                     enhanced_prompt = f"[Note: An image was provided but cannot be processed directly. Please respond based on the text context.]\n\n{prompt}"
-                return asyncio.get_event_loop().run_until_complete(
-                    claude_code_provider.complete(
-                        prompt=enhanced_prompt,
-                        system_prompt=system_prompt or "You are a helpful assistant.",
-                        model=llm_model,
-                    )
-                )
+
+                def run_sync():
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(
+                            claude_code_provider.complete(
+                                prompt=enhanced_prompt,
+                                system_prompt=system_prompt or "You are a helpful assistant.",
+                                model=llm_model,
+                            )
+                        )
+                    finally:
+                        loop.close()
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_sync)
+                    return future.result()
 
             # If messages format is provided, use it directly
             if messages:
