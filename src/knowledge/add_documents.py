@@ -31,6 +31,7 @@ from raganything import RAGAnything, RAGAnythingConfig
 
 from src.services.embedding import get_embedding_client, get_embedding_config
 from src.services.llm import get_llm_config
+from src.services.llm import claude_code_provider
 
 load_dotenv(dotenv_path=".env", override=False)
 
@@ -158,8 +159,23 @@ class DocumentAdder:
         model = self.llm_cfg.model
         api_key = self.api_key or self.llm_cfg.api_key
         base_url = self.base_url or self.llm_cfg.base_url
+        use_claude_code = self.llm_cfg.binding == "claude_code"
 
         def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+            if use_claude_code:
+                # Use Claude Code CLI provider
+                import asyncio
+                messages = []
+                for msg in history_messages:
+                    messages.append(msg)
+                return asyncio.get_event_loop().run_until_complete(
+                    claude_code_provider.complete(
+                        prompt=prompt,
+                        system_prompt=system_prompt or "You are a helpful assistant.",
+                        model=model,
+                        messages=messages if messages else None,
+                    )
+                )
             return openai_complete_if_cache(
                 model,
                 prompt,
@@ -178,6 +194,20 @@ class DocumentAdder:
             messages=None,
             **kwargs,
         ):
+            if use_claude_code:
+                # Claude Code CLI doesn't support vision directly in the same way
+                import asyncio
+                enhanced_prompt = prompt
+                if image_data:
+                    enhanced_prompt = f"[Note: An image was provided but cannot be processed directly. Please respond based on the text context.]\n\n{prompt}"
+                return asyncio.get_event_loop().run_until_complete(
+                    claude_code_provider.complete(
+                        prompt=enhanced_prompt,
+                        system_prompt=system_prompt or "You are a helpful assistant.",
+                        model=model,
+                    )
+                )
+
             if messages:
                 clean_kwargs = {
                     k: v

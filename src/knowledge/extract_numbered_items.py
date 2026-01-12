@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from lightrag.llm.openai import openai_complete_if_cache
 
 from src.services.llm import get_llm_config
+from src.services.llm import claude_code_provider
 
 load_dotenv(dotenv_path=".env", override=False)
 
@@ -61,9 +62,17 @@ async def _call_llm_async(
 ) -> str:
     """Asynchronously call LLM"""
     # If model not specified, get from env_config
+    llm_cfg = get_llm_config()
     if model is None:
-        llm_cfg = get_llm_config()
         model = llm_cfg.model
+
+    # Use Claude Code CLI provider if binding is claude_code
+    if llm_cfg.binding == "claude_code":
+        return await claude_code_provider.complete(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model=model,
+        )
 
     result = openai_complete_if_cache(
         model,

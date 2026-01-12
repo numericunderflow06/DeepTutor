@@ -122,6 +122,16 @@ def get_llm_config() -> LLMConfig:
             "Error: LLM_MODEL not set, please configure it in .env file or activate a provider"
         )
 
+    # Special handling for claude_code binding - uses CLI, no API key needed
+    if binding == "claude_code":
+        return LLMConfig(
+            binding="claude_code",
+            model=model,
+            api_key="",  # Not needed for Claude Code CLI
+            base_url=None,  # Not needed for Claude Code CLI
+            provider_type="api",  # Treat as API type for compatibility
+        )
+
     # Determine provider type from base_url
     from .utils import is_local_llm_server
 

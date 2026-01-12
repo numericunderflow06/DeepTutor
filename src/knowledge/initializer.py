@@ -33,6 +33,7 @@ from raganything import RAGAnything, RAGAnythingConfig
 
 from src.services.embedding import get_embedding_client, get_embedding_config
 from src.services.llm import get_llm_config
+from src.services.llm import claude_code_provider
 
 load_dotenv(dotenv_path=".env", override=False)
 
@@ -197,9 +198,24 @@ class KnowledgeBaseInitializer:
         llm_model = llm_cfg.model
         api_key = self.api_key or llm_cfg.api_key
         base_url = self.base_url or llm_cfg.base_url
+        use_claude_code = llm_cfg.binding == "claude_code"
 
         # Define LLM model function
         def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+            if use_claude_code:
+                # Use Claude Code CLI provider
+                import asyncio
+                messages = []
+                for msg in history_messages:
+                    messages.append(msg)
+                return asyncio.get_event_loop().run_until_complete(
+                    claude_code_provider.complete(
+                        prompt=prompt,
+                        system_prompt=system_prompt or "You are a helpful assistant.",
+                        model=llm_model,
+                        messages=messages if messages else None,
+                    )
+                )
             return openai_complete_if_cache(
                 llm_model,
                 prompt,
@@ -219,6 +235,22 @@ class KnowledgeBaseInitializer:
             messages=None,
             **kwargs,
         ):
+            if use_claude_code:
+                # Claude Code CLI doesn't support vision directly in the same way
+                # For now, fall back to text-only processing for vision requests
+                import asyncio
+                # If there's image data, include a note about it in the prompt
+                enhanced_prompt = prompt
+                if image_data:
+                    enhanced_prompt = f"[Note: An image was provided but cannot be processed directly. Please respond based on the text context.]\n\n{prompt}"
+                return asyncio.get_event_loop().run_until_complete(
+                    claude_code_provider.complete(
+                        prompt=enhanced_prompt,
+                        system_prompt=system_prompt or "You are a helpful assistant.",
+                        model=llm_model,
+                    )
+                )
+
             # If messages format is provided, use it directly
             if messages:
                 # Remove 'messages' and other message-related params from kwargs to avoid duplicate parameter
